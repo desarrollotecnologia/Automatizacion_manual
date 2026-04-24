@@ -1,0 +1,8 @@
+# No versionar secretos ni salidas locales
+.env
+*.log
+salida/
+ultima_corrida.txt
+build/
+dist/
+*.spec

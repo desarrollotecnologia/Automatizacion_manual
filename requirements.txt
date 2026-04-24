@@ -1,0 +1,12 @@
+# Lectura de la base de clientes (Excel) y documentación para plantillas con macros
+openpyxl>=3.1.0
+pillow>=10.0.0
+
+# Ejecución de Excel y macros VBA en Windows (solo si GENERAS con la plantilla .xlsm)
+pywin32>=306; sys_platform == "win32"
+
+# Conexión a base de datos vía ODBC (SQL Server / etc.) en Windows
+pyodbc>=5.1.0; sys_platform == "win32"
+
+# Conexión a PostgreSQL (recomendado: psycopg v3 con binarios)
+psycopg[binary]>=3.2.0

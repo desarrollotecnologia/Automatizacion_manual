@@ -1,0 +1,2 @@
+# Solo en la PC donde se empaqueta el .exe portable (no hace falta en los PCs de los usuarios).
+pyinstaller>=6.0
