@@ -247,20 +247,20 @@ destinos AS (
 decomisos_sai AS (
     SELECT
         i.id_producto AS animal,
-        STRING_AGG(
-            DISTINCT COALESCE(NULLIF(BTRIM(d.observacion), ''), tpp.nombre),
-            ', '
-            ORDER BY COALESCE(NULLIF(BTRIM(d.observacion), ''), tpp.nombre)
-        ) AS decomiso_texto
+        STRING_AGG(DISTINCT det.parte, ', ' ORDER BY det.parte) AS decomiso_texto
     FROM sai.inspeccion i
     JOIN sai.inspeccion_decomiso idc
       ON idc.id_inspeccion = i.id
-    JOIN sai.decomiso d
-      ON d.id = idc.id_decomiso
-    JOIN trazabilidad_proceso.tipo_parte_producto tpp
-      ON tpp.id = d.id_tipo_parte_producto
+    LEFT JOIN trazabilidad_proceso.parte_producto ppi
+      ON ppi.id = i.id_parte_producto
+    LEFT JOIN trazabilidad_proceso.tipo_parte_producto tppi
+      ON tppi.id = ppi.id_tipo_parte_producto
     JOIN animales a
       ON a.animal = i.id_producto
+    CROSS JOIN LATERAL (
+        SELECT NULLIF(BTRIM(tppi.nombre), '') AS parte
+    ) det
+    WHERE det.parte IS NOT NULL
     GROUP BY i.id_producto
 )
 
@@ -301,7 +301,7 @@ SELECT
         WHEN d.emergencia::text ILIKE 's%' THEN 'SI'
         ELSE 'NO'
     END AS "Sacrificio de Emergencia",
-    COALESCE(ds.decomiso_texto, NULLIF(BTRIM(d.decomiso::text), '')) AS "Decomiso",
+    ds.decomiso_texto AS "Decomiso",
     b.rendimiento AS "Rendimiento (%)",
     d.propietario AS "Propietario",
     b.fecha_plan AS "Fecha plan",

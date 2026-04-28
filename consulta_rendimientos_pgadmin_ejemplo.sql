@@ -235,30 +235,31 @@ destinos AS (
 ),
 
 -- Decomiso textual real por animal desde SAI:
---   sai.inspeccion_decomiso -> sai.decomiso -> nombre real (si existe)
---   fallback: tipo_parte_producto.nombre
+--   sai.inspeccion.id_parte_producto -> tipo_parte_producto.nombre (parte real).
+-- Regla de negocio: mostrar la PARTE decomisada (ej. Pulmones), no diagnóstico
+-- ni categorías generales como "Visceras Rojas".
 decomisos_sai AS MATERIALIZED (
     SELECT
         i.id_producto AS animal,
-        STRING_AGG(
-            DISTINCT COALESCE(NULLIF(BTRIM(d.observacion), ''), tpp.nombre),
-            ', '
-            ORDER BY COALESCE(NULLIF(BTRIM(d.observacion), ''), tpp.nombre)
-        ) AS decomiso_texto
+        STRING_AGG(DISTINCT det.parte, ', ' ORDER BY det.parte) AS decomiso_texto
     FROM sai.inspeccion i
     JOIN sai.inspeccion_decomiso idc
       ON idc.id_inspeccion = i.id
-    JOIN sai.decomiso d
-      ON d.id = idc.id_decomiso
-    JOIN trazabilidad_proceso.tipo_parte_producto tpp
-      ON tpp.id = d.id_tipo_parte_producto
+    LEFT JOIN trazabilidad_proceso.parte_producto ppi
+      ON ppi.id = i.id_parte_producto
+    LEFT JOIN trazabilidad_proceso.tipo_parte_producto tppi
+      ON tppi.id = ppi.id_tipo_parte_producto
     JOIN animales a
       ON a.animal = i.id_producto
+    CROSS JOIN LATERAL (
+        SELECT NULLIF(BTRIM(tppi.nombre), '') AS parte
+    ) det
+    WHERE det.parte IS NOT NULL
     GROUP BY i.id_producto
 ),
 
 -- Emergencia y propietario desde vw_pbi01 (con el filtro pbi_filtrado ya recortado).
--- Decomiso prioriza SAI textual; si no existe, cae al campo legado de vw_pbi01.
+-- Decomiso: solo detalle real desde SAI; si no hay detalle, queda vacío.
 info_animal AS MATERIALIZED (
     SELECT
         v.codigo AS animal,
@@ -272,10 +273,7 @@ info_animal AS MATERIALIZED (
                 ELSE FALSE
             END
         ) AS emergencia,
-        COALESCE(
-            ds.decomiso_texto,
-            NULLIF(BTRIM(MAX(v.decomiso)::text), '')
-        ) AS decomiso
+        ds.decomiso_texto AS decomiso
     FROM pbi_filtrado v
     LEFT JOIN decomisos_sai ds
       ON ds.animal = v.codigo
