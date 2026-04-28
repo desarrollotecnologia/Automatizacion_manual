@@ -77,7 +77,9 @@ animales AS MATERIALIZED (
 ),
 
 base AS MATERIALIZED (
-    SELECT DISTINCT ON (a.id_plan_faena, pr.id)
+    -- Un animal puede quedar asociado a más de un plan_faena en el mismo día.
+    -- Para el reporte debe salir una sola fila por animal.
+    SELECT DISTINCT ON (pr.id)
         pr.id AS animal,
         pr.sexo,
         TRIM(BOTH ' - ' FROM CONCAT_WS(' - ', NULLIF(TRIM(pr.especie), ''), NULLIF(TRIM(pr.raza), ''))) AS especie_raza,
@@ -110,7 +112,7 @@ base AS MATERIALIZED (
       ON pf.id = a.id_plan_faena
     JOIN trazabilidad_proceso.producto pr
       ON pr.id = a.animal
-    ORDER BY a.id_plan_faena, pr.id, pf.fecha_plan DESC
+    ORDER BY pr.id, pf.fecha_plan DESC, pf.id DESC
 ),
 
 partes_base AS MATERIALIZED (
@@ -232,8 +234,31 @@ destinos AS (
     GROUP BY pd.animal
 ),
 
--- Emergencia, decomiso y propietario siguen viniendo de vw_pbi01 (con el
--- filtro pbi_filtrado ya recortado). Tomamos una fila por animal.
+-- Decomiso textual real por animal desde SAI:
+--   sai.inspeccion_decomiso -> sai.decomiso -> nombre real (si existe)
+--   fallback: tipo_parte_producto.nombre
+decomisos_sai AS MATERIALIZED (
+    SELECT
+        i.id_producto AS animal,
+        STRING_AGG(
+            DISTINCT COALESCE(NULLIF(BTRIM(d.observacion), ''), tpp.nombre),
+            ', '
+            ORDER BY COALESCE(NULLIF(BTRIM(d.observacion), ''), tpp.nombre)
+        ) AS decomiso_texto
+    FROM sai.inspeccion i
+    JOIN sai.inspeccion_decomiso idc
+      ON idc.id_inspeccion = i.id
+    JOIN sai.decomiso d
+      ON d.id = idc.id_decomiso
+    JOIN trazabilidad_proceso.tipo_parte_producto tpp
+      ON tpp.id = d.id_tipo_parte_producto
+    JOIN animales a
+      ON a.animal = i.id_producto
+    GROUP BY i.id_producto
+),
+
+-- Emergencia y propietario desde vw_pbi01 (con el filtro pbi_filtrado ya recortado).
+-- Decomiso prioriza SAI textual; si no existe, cae al campo legado de vw_pbi01.
 info_animal AS MATERIALIZED (
     SELECT
         v.codigo AS animal,
@@ -247,9 +272,14 @@ info_animal AS MATERIALIZED (
                 ELSE FALSE
             END
         ) AS emergencia,
-        MAX(v.decomiso) AS decomiso
+        COALESCE(
+            ds.decomiso_texto,
+            NULLIF(BTRIM(MAX(v.decomiso)::text), '')
+        ) AS decomiso
     FROM pbi_filtrado v
-    GROUP BY v.codigo
+    LEFT JOIN decomisos_sai ds
+      ON ds.animal = v.codigo
+    GROUP BY v.codigo, ds.decomiso_texto
 )
 
 SELECT

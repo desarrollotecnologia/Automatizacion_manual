@@ -39,7 +39,9 @@ animales AS (
 ),
 
 base AS (
-    SELECT DISTINCT ON (a.id_plan_faena, pr.id)
+    -- Un animal puede estar repetido por múltiples plan_faena del mismo día.
+    -- Para el reporte final debe salir una sola fila por animal.
+    SELECT DISTINCT ON (pr.id)
         pr.id AS animal,
         pr.sexo,
         TRIM(BOTH ' - ' FROM CONCAT_WS(' - ', NULLIF(TRIM(pr.especie), ''), NULLIF(TRIM(pr.raza), ''))) AS especie_raza,
@@ -72,7 +74,7 @@ base AS (
       ON pf.id = a.id_plan_faena
     JOIN trazabilidad_proceso.producto pr
       ON pr.id = a.animal
-    ORDER BY a.id_plan_faena, pr.id, pf.fecha_plan DESC
+    ORDER BY pr.id, pf.fecha_plan DESC, pf.id DESC
 ),
 
 partes_base AS (
@@ -240,6 +242,26 @@ destinos AS (
     LEFT JOIN base b
       ON b.animal = n.animal
     GROUP BY n.animal
+),
+
+decomisos_sai AS (
+    SELECT
+        i.id_producto AS animal,
+        STRING_AGG(
+            DISTINCT COALESCE(NULLIF(BTRIM(d.observacion), ''), tpp.nombre),
+            ', '
+            ORDER BY COALESCE(NULLIF(BTRIM(d.observacion), ''), tpp.nombre)
+        ) AS decomiso_texto
+    FROM sai.inspeccion i
+    JOIN sai.inspeccion_decomiso idc
+      ON idc.id_inspeccion = i.id
+    JOIN sai.decomiso d
+      ON d.id = idc.id_decomiso
+    JOIN trazabilidad_proceso.tipo_parte_producto tpp
+      ON tpp.id = d.id_tipo_parte_producto
+    JOIN animales a
+      ON a.animal = i.id_producto
+    GROUP BY i.id_producto
 )
 
 SELECT
@@ -279,7 +301,7 @@ SELECT
         WHEN d.emergencia::text ILIKE 's%' THEN 'SI'
         ELSE 'NO'
     END AS "Sacrificio de Emergencia",
-    d.decomiso AS "Decomiso",
+    COALESCE(ds.decomiso_texto, NULLIF(BTRIM(d.decomiso::text), '')) AS "Decomiso",
     b.rendimiento AS "Rendimiento (%)",
     d.propietario AS "Propietario",
     b.fecha_plan AS "Fecha plan",
@@ -289,6 +311,8 @@ LEFT JOIN partes p
   ON p.animal = b.animal
 LEFT JOIN destinos d
   ON d.animal = b.animal
+LEFT JOIN decomisos_sai ds
+  ON ds.animal = b.animal
 ORDER BY b.id_plan_faena, b.animal;
 
 -- Para guardar en una tabla:

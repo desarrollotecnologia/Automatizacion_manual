@@ -1161,6 +1161,64 @@ def ejecutar_consulta_db_por_cliente(
         return cols, filas
 
 
+def aplicar_guardrail_duplicados_por_animal(
+    columnas: Sequence[str],
+    filas: List[Tuple[Any, ...]],
+    nombre_cliente: str,
+    log: logging.Logger,
+) -> Tuple[List[Tuple[Any, ...]], int]:
+    """
+    Detecta y elimina filas duplicadas por `Animal` para evitar adjuntos inflados.
+
+    Mantiene la primera ocurrencia por animal (orden estable) y registra en log
+    cuántas filas se removieron para trazabilidad.
+    """
+    if not filas:
+        return filas, 0
+
+    idx_animal: Optional[int] = None
+    for i, col in enumerate(columnas):
+        if str(col).strip().lower() == "animal":
+            idx_animal = i
+            break
+    if idx_animal is None:
+        # Sin columna Animal no podemos validar de forma segura.
+        log.warning(
+            "Guardrail duplicados: no se encontró columna 'Animal' para cliente '%s'; se omite validación.",
+            nombre_cliente[:80],
+        )
+        return filas, 0
+
+    vistos: Set[Any] = set()
+    filtradas: List[Tuple[Any, ...]] = []
+    duplicadas = 0
+    muestra: List[str] = []
+
+    for fila in filas:
+        # Fila inconsistente: no romper flujo, conservarla.
+        if idx_animal >= len(fila):
+            filtradas.append(fila)
+            continue
+        animal_id = fila[idx_animal]
+        if animal_id in vistos:
+            duplicadas += 1
+            if len(muestra) < 10:
+                muestra.append(str(animal_id))
+            continue
+        vistos.add(animal_id)
+        filtradas.append(fila)
+
+    if duplicadas > 0:
+        log.warning(
+            "Guardrail duplicados: cliente '%s' tenía %s fila(s) duplicada(s) por Animal; "
+            "se removieron automáticamente. Muestra: %s",
+            nombre_cliente[:80],
+            duplicadas,
+            ", ".join(muestra) if muestra else "(sin muestra)",
+        )
+    return filtradas, duplicadas
+
+
 def exportar_resultado_a_xlsx(
     columnas: List[str],
     filas: List[Tuple[Any, ...]],
@@ -2877,12 +2935,19 @@ def main() -> int:
                         )
                 elif usar_db:
                     columnas, filas = ejecutar_consulta_db_por_cliente(cliente.nombre, log)
+                    filas, duplicadas_removidas = aplicar_guardrail_duplicados_por_animal(
+                        columnas,
+                        filas,
+                        cliente.nombre,
+                        log,
+                    )
                     total_canales_cliente = len(filas)
                     log.info(
-                        "SQL: cliente='%s' -> filas=%d, columnas=%d",
+                        "SQL: cliente='%s' -> filas=%d, columnas=%d, duplicados_removidos=%d",
                         cliente.nombre[:60],
                         len(filas),
                         len(columnas),
+                        duplicadas_removidas,
                     )
                     if (
                         cliente.cavas_resumen

@@ -107,7 +107,9 @@ animales AS MATERIALIZED (
 ),
 
 base AS MATERIALIZED (
-    SELECT DISTINCT ON (a.id_plan_faena, pr.id)
+    -- Un animal puede quedar asociado a más de un plan_faena en el mismo día.
+    -- Para el reporte debe salir una sola fila por animal.
+    SELECT DISTINCT ON (pr.id)
         pr.id AS animal,
         pr.sexo,
         TRIM(BOTH ' - ' FROM CONCAT_WS(' - ', NULLIF(TRIM(pr.especie), ''), NULLIF(TRIM(pr.raza), ''))) AS especie_raza,
@@ -140,7 +142,7 @@ base AS MATERIALIZED (
       ON pf.id = a.id_plan_faena
     JOIN trazabilidad_proceso.producto pr
       ON pr.id = a.animal
-    ORDER BY a.id_plan_faena, pr.id, pf.fecha_plan DESC
+    ORDER BY pr.id, pf.fecha_plan DESC, pf.id DESC
 ),
 
 partes_base AS MATERIALIZED (
@@ -280,7 +282,11 @@ destinos AS (
 decomisos_sai AS MATERIALIZED (
     SELECT
         i.id_producto AS animal,
-        STRING_AGG(DISTINCT tpp.nombre, ', ' ORDER BY tpp.nombre) AS decomiso_texto
+        STRING_AGG(
+            DISTINCT COALESCE(NULLIF(BTRIM(d.observacion), ''), tpp.nombre),
+            ', '
+            ORDER BY COALESCE(NULLIF(BTRIM(d.observacion), ''), tpp.nombre)
+        ) AS decomiso_texto
     FROM sai.inspeccion i
     JOIN sai.inspeccion_decomiso idc
       ON idc.id_inspeccion = i.id
