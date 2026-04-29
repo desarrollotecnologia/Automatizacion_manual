@@ -493,37 +493,25 @@ def combinar_correos_cliente_sirt_con_excel(
     log: logging.Logger,
 ) -> List[ClienteFila]:
     """
-    Lista de envío = SIRT (nombre y correos de empresa); añade correos del Excel
-    cuando el nombre de la fila coincide de forma flexible con el de SIRT.
+    Política de envío: mantener únicamente correos desde SIRT.
+    El parámetro clientes_excel se conserva por compatibilidad de firma, pero
+    no se usa para ampliar destinatarios.
     """
-    resultado: List[ClienteFila] = []
-    for sc in clientes_sirt:
-        merged = list(sc.correos)
-        for ec in clientes_excel:
-            if not _nombres_cliente_coinciden_fuzzy(sc.nombre, ec.nombre):
-                continue
-            antes = len(merged)
-            merged = _recopilar_correos_unicos(merged + ec.correos)
-            if len(merged) > antes:
-                log.debug(
-                    "Merge Excel→SIRT: propietario SIRT '%s' incorporó correos desde Excel fila %s ('%s')",
-                    sc.nombre[:80],
-                    ec.fila_excel,
-                    ec.nombre[:80],
-                )
-        resultado.append(
-            ClienteFila(
-                nombre=sc.nombre,
-                correos=merged,
-                fila_excel=sc.fila_excel,
-                origen="merge",
-                cavas_resumen=sc.cavas_resumen,
-            )
+    if clientes_excel:
+        log.info(
+            "Lista merge: se ignoran correos del Excel por política de envío (solo correos_opcionales de SIRT)."
         )
-    log.info(
-        "Lista merge: %s clientes desde SIRT con posible ampliación de correos desde Excel.",
-        len(resultado),
-    )
+    resultado: List[ClienteFila] = [
+        ClienteFila(
+            nombre=sc.nombre,
+            correos=list(sc.correos),
+            fila_excel=sc.fila_excel,
+            origen="merge",
+            cavas_resumen=sc.cavas_resumen,
+        )
+        for sc in clientes_sirt
+    ]
+    log.info("Lista merge: %s clientes usando únicamente correos de SIRT.", len(resultado))
     return resultado
 
 
@@ -544,7 +532,8 @@ def _resolver_solo_cava_lista_sirt() -> bool:
 def cargar_clientes_desde_sirt(log: logging.Logger) -> List[ClienteFila]:
     """
     Propietarios con faena en FECHA_PLAN y sacrificio en [fecha, fecha+2d),
-    con correos desde organizaciones.empresa (producto_empresa activo).
+    usando únicamente organizaciones.empresa.correos_opcionales como
+    destinatarios (si no hay correos_opcionales válidos, se omite cliente).
 
     Alineado al prefiltro por vw_pbi01 para que los nombres coincidan con la consulta de rendimientos.
     Por defecto (lista sirt|merge) solo incluye clientes con al menos una asignación de cava
@@ -648,13 +637,11 @@ def cargar_clientes_desde_sirt(log: logging.Logger) -> List[ClienteFila]:
             )
             rows = cur.fetchall()
     for row in rows:
-        _eid, nombre, correo, correos_opc, correo_fact, cavas_txt = row
+        _eid, nombre, _correo, correos_opc, _correo_fact, cavas_txt = row
         nombre_limpio = str(nombre).strip() if nombre else ""
         if not nombre_limpio:
             continue
-        correos_raw: List[str] = []
-        for campo in (correo, correos_opc, correo_fact):
-            correos_raw.extend(parsear_lista_correos(campo))
+        correos_raw: List[str] = parsear_lista_correos(correos_opc)
         correos_raw = _recopilar_correos_unicos(correos_raw)
         if filtrar_internos:
             correos = filtrar_correos_cliente_final(
@@ -665,13 +652,13 @@ def cargar_clientes_desde_sirt(log: logging.Logger) -> List[ClienteFila]:
         if not correos:
             if correos_raw and filtrar_internos:
                 log.warning(
-                    "SIRT cliente '%s' solo tiene correos internos (%s); se omite.",
+                    "SIRT cliente '%s' tiene correos_opcionales solo internos (%s); se omite.",
                     nombre_limpio[:80],
                     correos_raw,
                 )
             elif not correos_raw:
                 log.warning(
-                    "SIRT cliente '%s' sin correos en empresa (correo/correos_opcionales); se omite.",
+                    "SIRT cliente '%s' sin correos_opcionales válidos; se omite.",
                     nombre_limpio[:80],
                 )
             continue
@@ -688,7 +675,7 @@ def cargar_clientes_desde_sirt(log: logging.Logger) -> List[ClienteFila]:
 
     con_cava = sum(1 for c in clientes if c.cavas_resumen)
     log.info(
-        "Clientes desde SIRT (fecha_plan=%s, solo_cava=%s): total=%s, con resumen de cavas=%s",
+        "Clientes desde SIRT (fecha_plan=%s, solo_cava=%s, fuente=correos_opcionales): total=%s, con resumen de cavas=%s",
         fecha_plan,
         solo_cava,
         len(clientes),
