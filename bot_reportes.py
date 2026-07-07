@@ -82,6 +82,7 @@ import smtplib
 import sys
 import subprocess
 import shutil
+import time
 import unicodedata
 from email.utils import formataddr
 import tempfile
@@ -2710,7 +2711,13 @@ def enviar_correo_resumen_si_aplica(
         bcc=None,
     )
     try:
-        enviar_correo_smtp(cfg, list(destinos), mensaje)
+        enviar_correo_smtp_con_reintentos(
+            cfg,
+            list(destinos),
+            mensaje,
+            log,
+            contexto="resumen de ejecución",
+        )
         log.info("Correo de resumen de ejecución enviado a: %s", ", ".join(destinos))
     except Exception as e:
         log.warning("No se pudo enviar el correo de resumen de ejecución: %s", e)
@@ -2732,7 +2739,7 @@ def enviar_correo_smtp(
         import ssl
 
         contexto = ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=contexto) as servidor:
+        with smtplib.SMTP_SSL(host, port, context=contexto, timeout=120) as servidor:
             servidor.login(user, password)
             servidor.send_message(mensaje, to_addrs=destinatarios_todos)
     else:
@@ -2743,6 +2750,91 @@ def enviar_correo_smtp(
                 servidor.ehlo()
             servidor.login(user, password)
             servidor.send_message(mensaje, to_addrs=destinatarios_todos)
+
+
+def _es_error_smtp_permanente(exc: BaseException) -> bool:
+    """Distingue errores SMTP definitivos (no reintentar) de los temporales."""
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return True
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        errores = getattr(exc, "recipients", {}) or {}
+        codigos = [v[0] for v in errores.values() if isinstance(v, tuple) and v]
+        if not codigos:
+            return True
+        return all(500 <= int(c) < 600 for c in codigos)
+    if isinstance(exc, smtplib.SMTPSenderRefused):
+        return 500 <= int(getattr(exc, "smtp_code", 500)) < 600
+    if isinstance(exc, smtplib.SMTPDataError):
+        return 500 <= int(getattr(exc, "smtp_code", 500)) < 600
+    if isinstance(exc, smtplib.SMTPResponseException):
+        return 500 <= int(getattr(exc, "smtp_code", 500)) < 600
+    return False
+
+
+def enviar_correo_smtp_con_reintentos(
+    cfg: dict,
+    destinatarios_todos: List[str],
+    mensaje: MIMEMultipart,
+    log: logging.Logger,
+    *,
+    contexto: str,
+) -> None:
+    """Envía con reintentos y backoff en errores SMTP temporales.
+
+    Config por variables de entorno:
+      SMTP_MAX_RETRIES (default 3)  -> intentos totales
+      SMTP_RETRY_DELAY_SEC (default 20) -> espera base entre intentos
+    """
+    try:
+        max_intentos = max(1, int(os.getenv("SMTP_MAX_RETRIES", "3").strip() or "3"))
+    except ValueError:
+        max_intentos = 3
+    try:
+        espera_base = max(1, int(os.getenv("SMTP_RETRY_DELAY_SEC", "20").strip() or "20"))
+    except ValueError:
+        espera_base = 20
+
+    ultimo_error: Optional[BaseException] = None
+    for intento in range(1, max_intentos + 1):
+        try:
+            enviar_correo_smtp(cfg, destinatarios_todos, mensaje)
+            if intento > 1:
+                log.info(
+                    "SMTP OK en reintento %s/%s para %s",
+                    intento,
+                    max_intentos,
+                    contexto,
+                )
+            return
+        except Exception as exc:
+            ultimo_error = exc
+            if _es_error_smtp_permanente(exc):
+                log.error(
+                    "SMTP error permanente para %s (no se reintenta): %s",
+                    contexto,
+                    exc,
+                )
+                raise
+            if intento >= max_intentos:
+                log.error(
+                    "SMTP fallo tras %s intento(s) para %s: %s",
+                    intento,
+                    contexto,
+                    exc,
+                )
+                raise
+            espera = espera_base * intento  # backoff lineal (20s, 40s, 60s...)
+            log.warning(
+                "SMTP intento %s/%s fallo para %s: %s. Reintentando en %ss...",
+                intento,
+                max_intentos,
+                contexto,
+                exc,
+                espera,
+            )
+            time.sleep(espera)
+    if ultimo_error:
+        raise ultimo_error
 
 
 def main() -> int:
@@ -2848,13 +2940,21 @@ def main() -> int:
 
         solo_cliente = os.getenv("SOLO_CLIENTE_NOMBRE", "").strip()
         if solo_cliente:
-            objetivo = _normalizar_nombre_cliente(solo_cliente)
+            objetivos = [
+                _normalizar_nombre_cliente(x)
+                for x in solo_cliente.split("|")
+                if x and x.strip()
+            ]
+            objetivos = [o for o in objetivos if o]
             antes = len(clientes)
             clientes = [
-                c for c in clientes if objetivo in _normalizar_nombre_cliente(c.nombre)
+                c
+                for c in clientes
+                if any(o in _normalizar_nombre_cliente(c.nombre) for o in objetivos)
             ]
             log.info(
-                "Filtro SOLO_CLIENTE_NOMBRE activo: '%s' -> %s/%s filas",
+                "Filtro SOLO_CLIENTE_NOMBRE activo (%s patron(es)): '%s' -> %s/%s filas",
+                len(objetivos),
                 solo_cliente,
                 len(clientes),
                 antes,
@@ -3074,7 +3174,13 @@ def main() -> int:
                 bcc=bcc_list if bcc_list else None,
             )
             try:
-                enviar_correo_smtp(cfg, envio_todos, mensaje)
+                enviar_correo_smtp_con_reintentos(
+                    cfg,
+                    envio_todos,
+                    mensaje,
+                    log,
+                    contexto=f"cliente '{cliente.nombre}'",
+                )
                 log.info(
                     "Correo enviado a %s (%s destinatario(s) en Para, %s Bcc)",
                     cliente.nombre,
