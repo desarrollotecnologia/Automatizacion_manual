@@ -156,7 +156,12 @@ def directorio_aplicacion() -> Path:
 
 
 def cargar_dotenv_proyecto() -> None:
-    """Lee `.env` junto a este script y aplica variables (prioridad sobre entorno vacío)."""
+    """
+    Lee `.env` junto a este script sin pisar variables ya definidas.
+
+    Esto permite que el frontend/launcher pase valores dinámicos como
+    DB_FECHA_PLAN_AUTO=hoy|ayer y que tengan prioridad sobre el .env.
+    """
     env_path = directorio_aplicacion() / ".env"
     if not env_path.is_file():
         return
@@ -173,7 +178,7 @@ def cargar_dotenv_proyecto() -> None:
         clave, _, valor = s.partition("=")
         clave = clave.strip()
         valor = valor.strip().strip('"').strip("'")
-        if clave:
+        if clave and clave not in os.environ:
             os.environ[clave] = valor
 
 
